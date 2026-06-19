@@ -2,6 +2,7 @@ import requests
 import re
 import base64
 import os
+import json
 from dotenv import load_dotenv
 from groq import Groq
 from PIL import Image
@@ -88,18 +89,53 @@ def format_response(response_text):
     return "\n".join(processed_lines)
 
 
+def parse_nutrition_stats(raw_text):
+    """
+    Extrae las estadísticas nutricionales desde un bloque JSON estructurado
+    dentro del texto devuelto por el modelo.
+    """
+    stats = {
+        "calories": "--",
+        "protein": "--",
+        "carbs": "--",
+        "fats": "--"
+    }
+    
+    # Buscar el bloque JSON delimitado por [NUTRITION_JSON] y [/NUTRITION_JSON]
+    match = re.search(r"\[NUTRITION_JSON\]\s*(.*?)\s*\[/NUTRITION_JSON\]", raw_text, re.DOTALL | re.IGNORECASE)
+    if match:
+        try:
+            json_data = json.loads(match.group(1).strip())
+            stats["calories"] = str(json_data.get("calories", "--"))
+            
+            p = json_data.get("protein", "--")
+            stats["protein"] = f"{p}g" if str(p) != "--" else "--"
+            
+            c = json_data.get("carbs", "--")
+            stats["carbs"] = f"{c}g" if str(c) != "--" else "--"
+            
+            f = json_data.get("fats", "--")
+            stats["fats"] = f"{f}g" if str(f) != "--" else "--"
+        except Exception as e:
+            print(f"Error parsing JSON from model: {e}")
+            
+    return stats
+
+
 def generate_model_response(encoded_image, user_query, assistant_prompt):
     """
     Sends an image and a query to the model and retrieves the description or answer.
     Formats the response using HTML elements for better presentation.
+    Returns a tuple (formatted_response, stats)
     """
     # Validar si se ha configurado la API Key de Groq antes de hacer la solicitud
     if not os.getenv("GROQ_API_KEY"):
-        return (
+        error_html = (
             "<p style='color:#721c24; background-color:#f8d7da; padding:15px; border-radius:4px; border:1px solid #f5c6cb;'>"
             "<strong>Error de Configuración:</strong> No se ha detectado la variable <code>GROQ_API_KEY</code> en tu archivo <code>.env</code>. "
             "Por favor, obtén una clave en la consola de Groq y configúrala para poder analizar la imagen.</p>"
         )
+        return error_html, None
 
     # Crear el objeto de mensajes para Groq con soporte multimodal
     messages = [
@@ -127,12 +163,19 @@ def generate_model_response(encoded_image, user_query, assistant_prompt):
         )
         raw_response = chat_completion.choices[0].message.content
 
-        # Darle formato HTML a la respuesta cruda del modelo
-        formatted_response = format_response(raw_response)
-        return formatted_response
+        # Intentar extraer los macronutrientes estructurados en JSON
+        stats = parse_nutrition_stats(raw_response)
+
+        # Limpiar el bloque JSON de la respuesta para que no se muestre como texto en el frontend
+        clean_response = re.sub(r"\[NUTRITION_JSON\].*?\[/NUTRITION_JSON\]", "", raw_response, flags=re.DOTALL | re.IGNORECASE).strip()
+
+        # Darle formato HTML a la respuesta limpia del modelo
+        formatted_response = format_response(clean_response)
+        return formatted_response, stats
     except Exception as e:
         print(f"Error in generating response: {e}")
-        return f"<p style='color:#721c24; background-color:#f8d7da; padding:15px; border-radius:4px; border:1px solid #f5c6cb;'><strong>Error en la API de Groq:</strong> {str(e)}</p>"
+        error_html = f"<p style='color:#721c24; background-color:#f8d7da; padding:15px; border-radius:4px; border:1px solid #f5c6cb;'><strong>Error en la API de Groq:</strong> {str(e)}</p>"
+        return error_html, None
 
 @app.route("/", methods=["GET", "POST"])
 def index():
@@ -181,13 +224,24 @@ def index():
 
         Format your response exactly like the template above to ensure consistency.
 
+        At the very end of your response, you MUST append a JSON block containing the total summaries of the macros. This block must start with `[NUTRITION_JSON]` and end with `[/NUTRITION_JSON]`. Use the exact format below, replacing the values with the totals (do not include units like 'g' or 'kcal' inside the JSON values, only write pure integers or decimals):
+
+        [NUTRITION_JSON]
+        {
+          "calories": 445,
+          "protein": 34,
+          "carbs": 45,
+          "fats": 18
+        }
+        [/NUTRITION_JSON]
+
         """
 
             # Generate the model's response
-            response = generate_model_response(encoded_image, user_query, assistant_prompt)
+            response, stats = generate_model_response(encoded_image, user_query, assistant_prompt)
 
             # Render the result
-            return render_template("index.html", user_query=user_query, response=response)
+            return render_template("index.html", user_query=user_query, response=response, stats=stats)
 
         else:
             flash("Please upload an image file.", "danger")
