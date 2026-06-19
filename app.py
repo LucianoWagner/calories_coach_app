@@ -11,8 +11,8 @@ from flask import Flask, render_template, request, redirect, url_for, flash
 load_dotenv()
 
 app = Flask(__name__)
-# Clave secreta para habilitar el sistema de mensajes flash de Flask de forma segura
-app.secret_key = os.getenv("FLASK_SECRET_KEY", "cal_coach_app_secret_key_123")
+# Clave secreta: utiliza la variable de entorno, o genera una aleatoria y segura en memoria si no está definida
+app.secret_key = os.getenv("FLASK_SECRET_KEY") or os.urandom(24).hex()
 
 # Inicializar el cliente de Groq
 groq_api_key = os.getenv("GROQ_API_KEY")
